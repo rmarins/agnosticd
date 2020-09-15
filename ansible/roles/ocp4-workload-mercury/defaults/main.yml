@@ -1,0 +1,64 @@
+---
+become_override: False
+ocp_username: opentlc-mgr
+silent: False
+
+#enable_modules: htpasswd;austocale;3scale;servicemesh;pipelines;amqstreams;serverless;nexus
+enable_modules: autoscale;3scale
+
+###
+# Use this file variables expansion in the command line. Otherwise, default
+# variables of included roles overrides (those starting with underscore "_").
+# ---
+# Eg: ansible-playbook ... -e @./roles/path_to_this_file 
+
+###
+# NFS server to provide RWX storage class
+# ---
+_nfs_provided_storage_class: nfs-storage-type
+_nfs_pvc_size: 20Gi
+_nfs_pv_provided_size: 5Gi
+
+###
+# Cluster autoscaler
+_autoscale_machineset_min_replicas: 2
+_autoscale_machineset_max_replicas: 6
+_autoscale_cluster_max_replicas: 9
+_autoscale_cluster_enable_scaledown: True
+
+###
+# Red Hat - Registry Service Accounts
+# ---
+# Registry service accounts are named tokens that can be used in environments
+# where credentials will be shared, such as deployment systems.
+
+###
+# OpenShift Pipelines workload configuration
+ocp4_workload_pipelines_vars:
+  tkn_version: 0.9.0
+  channel: ocp-4.4
+  automatic_install_plan_approval: true
+  starting_csv: ""
+  spec_name: openshift-pipelines-operator-rh
+  spec_source: redhat-operators
+  spec_source_ns: openshift-marketplace
+#  starting_csv: v0.11.3
+
+###
+# Nexus Operator workload configuration
+ocp4_workload_nexus_operator_vars:
+  project: nexus-system
+  project_display: "Sonatype Nexus"
+  name: nexus
+  ssl_route: false
+  volume_size: 5Gi
+  # image: quay.io/gpte-devops-automation/nexus-operator
+  image_tag: v0.17.1
+  # nexus_image: docker.io/sonatype/nexus3
+  nexus_image: registry.connect.redhat.com/sonatype/nexus-repository-manager
+  nexus_image_tag: 3.24.0-ubi-1
+  deploy_nexus_instance: True
+
+
+###
+# OpenShift Service Mesh workload configuration

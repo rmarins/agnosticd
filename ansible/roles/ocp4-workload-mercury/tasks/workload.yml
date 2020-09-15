@@ -1,0 +1,306 @@
+---
+# User info printout messages on workload start
+- name: Setting up workload for user
+  debug:
+    msg: "Setting up workload for user ocp_username = {{ ocp_username }}"
+
+- name: Give access to opentlc-mgr
+  when: (ocp_username == 'opentlc-mgr')
+  shell: |
+         oc adm policy add-cluster-role-to-user cluster-admin {{ ocp_username }}
+
+- name: Setting up enable_modules for demo
+  debug:
+    msg: "Setting up workload enable_modules = {{ enable_modules }}"
+
+- name: create module list
+  set_fact:
+    modules: "{{ enable_modules.split(';') | map('trim') | list }}"
+
+- name: Selected Modules
+  debug:
+    msg: "selected modules list: {{ modules }}"
+
+- name: Run shell 'oc' command to retrieve the cluster subdomain
+  shell: "oc whoami --show-server | cut -d'.' -f 2,3,4,5,6 | cut -d':' -f 1"
+  register: r_shell
+
+- set_fact: subdomain_base={{ r_shell.stdout_lines[0] }}
+- set_fact: ocp_apps_domain=apps.{{ subdomain_base }}
+
+- name: Setting up subdomain_base and ocp_apps_domain
+  debug:
+    msg: "Setting up workload subdomain_base = {{ subdomain_base }} and ocp_apps_domain = {{ ocp_apps_domain }}"
+
+###
+# Project Mercury users configuration
+# ---
+# Skip in case OAuth/htpasswd is not yet configured in the cluster
+
+- name: "Project Mercury :: Setting up cluster OAuth with provided users.htpasswd"
+  when: ("htpasswd" in modules)
+  k8s_info:
+    api_version: v1
+    kind: Secret
+    name: htpasswd-secret
+    namespace: openshift-config
+  register: r_htpasswd
+
+- name: "Project Mercury :: Check if '/secrets/users.htpasswd' exist to update cluster OAuth"
+  when: ("htpasswd" in modules) and (not r_htpasswd | d('') | length == 0)
+  block:
+
+  - name: "Try copying '/secrets/users.htpasswd' file onto the target filesystem"
+    copy:
+      src: "/secrets/users.htpasswd"
+      dest: "/home/{{ ansible_user }}/users.htpasswd"
+      owner: "{{ ansible_user }}"
+      mode: 0664
+    register: r_htpasswd_copy
+    ignore_errors: true
+
+  - name: "Generate htpasswd-secret resource definition Yaml using 'oc command'"
+    when:
+      - r_htpasswd_copy is defined
+      - not r_htpasswd_copy.failed | d(False) | bool
+    command: "oc create secret generic htpasswd-secret -n openshift-config --from-file=htpasswd=/home/{{ ansible_user }}/users.htpasswd --dry-run -o yaml"
+    register: r_htpasswd_res_yaml
+
+  - name: Create htpasswd-secret from htpasswd file and generated Yaml description
+    when:
+      - r_htpasswd_copy is defined
+      - r_htpasswd_res_yaml is defined
+      - r_htpasswd_res_yaml | d('') | length > 0
+    k8s:
+      state: present
+      merge_type:
+        - strategic-merge
+        - merge
+      definition: "{{ r_htpasswd_res_yaml.stdout }}"
+
+  - name: Delete the users.htpasswd file generated on the target filesystem
+    when:
+      - r_htpasswd_copy is defined
+      - not r_htpasswd_copy.failed | bool
+    file:
+      state: absent
+      dest: "/home/{{ ansible_user }}/users.htpasswd"
+
+# Sets up the Cluster auto-scaling
+- name: 'Project Mercury :: Configure the OCP4 cluster autoscaler'
+  include_role:
+    name: ocp4-workload-cluster-autoscale
+  # vars:
+  #   _autoscale_machineset_min_replicas: "{{ autoscale_machineset_min_replicas|int }}"
+  #   _autoscale_machineset_max_replicas: "{{ autoscale_machineset_max_replicas|int }}"
+  #   _autoscale_cluster_max_replicas: "{{ autoscale_cluster_max_replicas|int }}"
+  #   _autoscale_cluster_enable_scaledown: "{{ autoscale_cluster_enable_scaledown }}"
+  when: ("autoscale" in modules)
+
+# Sets up the Cluster with User quota
+
+# # Set MachineConfig with DNS configuration on OpenTLC OpenStand environment
+# - name: 'Project Mercury :: Set up DNS configuration on OpenTLC environment'
+#   when: ("machineconfig" in modules) and (ocp_apps_domain.endswith(".opentlc.com"))
+#   k8s:
+#     state: present
+#     merge_type:
+#     - strategic-merge
+#     - merge
+#     definition: "{{ lookup('file', item ) | from_yaml }}"
+#   loop:
+#     - ./files/machineconfig-dns-master.yml
+#     - ./files/machineconfig-dns-worker.yml
+
+###
+# Projects
+# - name: "Project Mercury :: Adding user projects - mercury, firstpass, bian, apiexchange"
+#   include_tasks: create_project.yaml
+#   vars:
+#     user: "{{ ocp_username }}"
+#     name: "{{ item }}"
+#     display_name: "Project {{ item }}"
+#   loop:
+#     - "mercury"
+#     - "firstpass"
+#     - "bian"
+#     - "apiexchange"
+
+###
+# Enable Automatic Image prunning
+# - name: 'Project Mercury :: Enable cluster automatic image pruning'
+#   command: "oc patch co/image-registry --type=merge -p='{\"spec\": {\"managementState\": \"Managed\"}}'"
+
+###
+# OpenShift Pipelines operator install
+- name: 'Project Mercury :: Install the OpenShift Pipelines operator task'
+  when: ("pipelines" in modules)
+  include_role:
+    name: ocp4-workload-pipelines
+  vars:
+    become_override: yes
+
+###
+# 3scale Operator install
+# ---
+- name: 'Project Mercury :: Setting up the 3scale in the cluster'
+  when:
+    - ("3scale" in modules)
+    - ocp4_workload_mercury_threescale_registry_token is defined
+  block:
+
+  # create the "3scale" project and namespace
+  - name: Create '3scale' project
+    include_tasks: create_project.yaml
+    vars:
+      user: "{{ ocp_username }}"
+      name: "3scale"
+      display_name: "3scale Operator"
+
+  # Sets up the RWX storage provider required for 3scale
+  - name: Configure NFS Server workload to provide RWX storage class
+    include_role:
+      name: ocp4-workload-nfs-server
+
+  # install 3scale operator
+  - name: install 3scale operator
+    include_tasks: threescale_workload.yaml
+
+###
+# OpenShit ServiceMesh operator install
+#---
+- name: 'Project Mercury :: Install the OpenShift ServiceMesh operator tasks'
+  when: ("servicemesh" in modules)
+  block:
+
+  - name: Look for jaeger subscription
+    k8s_info:
+      api_version: operators.coreos.com/v1alpha1
+      kind: Subscription
+      name: jaeger-product
+      namespace: openshift-operators
+    register: r_jaeger_sub
+
+  - name: Create Jaeger
+    when: (r_jaeger_sub.resources | list | length == 0)
+    include_tasks: jaeger_workload.yaml
+
+  - name: Look for service mesh subscription
+    k8s_info:
+      api_version: operators.coreos.com/v1alpha1
+      kind: Subscription
+      name: servicemeshoperator
+      namespace: openshift-operators
+    register: r_sm_sub
+
+  - name: show existing service mesh cr
+    when: (r_sm_sub.resources | list | length > 0)
+    debug:
+      msg: "existing service mesh sub: {{ r_sm_sub }}"
+
+  # Setup OpenShift Service Mesh via operator
+  - name: Create OpenShift Objects for Service Mesh
+    when: (r_sm_sub.resources | list | length == 0)
+    include_tasks: servicemesh_workload.yaml
+
+  - name: Wait for Service Mesh pods to be ready
+    k8s_info:
+      kind: Deployment
+      api_version: apps/v1
+      namespace: istio-system
+      name: "{{ item }}"
+    register: r_dc
+    until:
+      - r_dc is defined
+      - r_dc.resources is defined
+      - r_dc.resources | list | length > 0
+      - r_dc.resources[0].status is defined
+      - r_dc.resources[0].status.readyReplicas is defined
+      - r_dc.resources[0].status.readyReplicas | int >= 1
+    loop:
+      - 3scale-istio-adapter
+      - grafana
+      - istio-citadel
+      - istio-egressgateway
+      - istio-galley
+      - istio-ingressgateway
+      - istio-pilot
+      - istio-policy
+      - istio-sidecar-injector
+      - istio-telemetry
+      - jaeger
+      - kiali
+      - prometheus
+    retries: 30
+    delay: 10
+
+  ### CREATE MEMBER ROLL ASSIGNING TO PROJECTS
+
+###
+# OpenShit Serverless operator install
+#---
+- name: 'Project Mercury :: Install the OpenShift Serverless operator tasks'
+  when: ("serverless" in modules)
+  block:
+
+  # Setup OpenShift Serverless via operator
+  - name: Look for serverless subscription
+    k8s_info:
+      api_version: operators.coreos.com/v1alpha1
+      kind: Subscription
+      name: serverless-operator
+      namespace: openshift-operators
+    register: r_serverless_sub
+
+  - name: show existing serverless sub
+    when: (r_serverless_sub.resources | list | length > 0)
+    debug:
+      msg: "existing serverless sub: {{ r_serverless_sub }}"
+
+  - name: Create OpenShift Objects for Serverless (knative)
+    when: (r_serverless_sub.resources | list | length == 0)
+    include_tasks: serverless_workload.yaml
+
+###
+# AMQ Streams operator install
+#---
+- name: 'Project Mercury :: Install the AMQ Streams operator tasks'
+  when: ("amqstreams" in modules)
+  block:
+
+  # Setup AMQ via operator
+  - name: Look for amq subscription
+    k8s_info:
+      api_version: operators.coreos.com/v1alpha1
+      kind: Subscription
+      name: amq-streams
+      namespace: openshift-operators
+    register: r_amq_sub
+
+  - name: show existing amq sub
+    when: (r_amq_sub.resources | list | length > 0)
+    debug:
+      msg: "existing amq sub: {{ r_amq_sub }}"
+
+  - name: Create OpenShift Objects for Kafka (amq streams)
+    when: (r_amq_sub.resources | list | length == 0)
+    include_tasks: amqstreams_workload.yaml
+
+  - name: Create OpenShift Objects for Knative for Kafka (amq streams)
+    when: ("serverless" in modules)
+    include_tasks: amqstreams_knative_workload.yaml
+
+###
+# Nexus GPTE's operator install and server deployment
+- name: 'Project Mercury :: Install the Nexus operator and deploy its server task'
+  when: ("nexus" in modules)
+  include_role:
+    name: ocp4-workload-nexus-operator
+  vars:
+    become_override: yes
+
+# Leave this as the last task in the playbook.
+- name: workload tasks complete
+  debug:
+    msg: "Workload Tasks completed successfully."
+  when: not silent|bool
