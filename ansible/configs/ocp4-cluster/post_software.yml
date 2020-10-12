@@ -119,18 +119,18 @@
     - name: Switch back to default project
       command: oc project default
 
-    - debug:
+    - agnosticd_user_info:
         msg: "{{ item }}"
       loop:
-      - "user.info: "
-      - "user.info: Post Flight Check"
-      - "user.info: DNS Web Console ............... {{ 'OK' if checkdnswebconsole.rc == 0 else 'FAIL' }}"
-      - "user.info: DNS API ....................... {{ 'OK' if checkdnsapi.rc == 0 else 'FAIL' }}"
-      - "user.info: Web console ................... {{ 'OK' if testwebconsole is succeeded else 'FAIL' }}"
-      - "user.info: API ........................... {{ 'OK' if clusterinfor.rc == 0 else 'FAIL' }}"
-      - "user.info: Create Project with PV ........ {{ 'OK' if newproject.rc == 0 else 'FAIL' }}"
-      - "user.info: App deployed .................. {{ 'OK' if phpw.rc == 0 and mysqlw.rc == 0 else 'FAIL' }}"
-      - "user.info: Route ......................... {{ 'OK' if testroute is succeeded else 'FAIL' }}"
+      - ""
+      - "Post Flight Check"
+      - "DNS Web Console ............... {{ 'OK' if checkdnswebconsole.rc == 0 else 'FAIL' }}"
+      - "DNS API ....................... {{ 'OK' if checkdnsapi.rc == 0 else 'FAIL' }}"
+      - "Web console ................... {{ 'OK' if testwebconsole is succeeded else 'FAIL' }}"
+      - "API ........................... {{ 'OK' if clusterinfor.rc == 0 else 'FAIL' }}"
+      - "Create Project with PV ........ {{ 'OK' if newproject.rc == 0 else 'FAIL' }}"
+      - "App deployed .................. {{ 'OK' if phpw.rc == 0 and mysqlw.rc == 0 else 'FAIL' }}"
+      - "Route ......................... {{ 'OK' if testroute is succeeded else 'FAIL' }}"
 
     - name: Fail smoke tests
       when:
@@ -315,22 +315,22 @@
     - name: Store bastion hostname as a fact
       set_fact:
         bastion_hostname: "{{groups['bastions'].0 }}"
-    - name: print out user.info
-      debug:
+    - name: print out user info
+      agnosticd_user_info:
         msg: "{{ item }}"
       loop:
-      - "user.info: You can access your bastion via SSH:"
+      - "You can access your bastion via SSH:"
       - >-
-        user.info: ssh {{ student_name }}@bastion.{{ guid }}{{
-        subdomain_base_suffix if cloud_provider == 'ec2' else '.'+ocp4_base_domain }}
-      - "user.info: "
+        ssh {{ student_name }}@bastion.{{ guid }}{{
+          subdomain_base_suffix if cloud_provider == 'ec2' else '.' ~ ocp4_base_domain
+        }}
+      - ""
       - >-
-        user.info: Make sure you use the username '{{ student_name }}'
+        Make sure you use the username '{{ student_name }}'
         and the password '{{ hostvars[bastion_hostname]['student_password'] }}' when prompted.
-    - name: print out user.info
-      debug:
-        msg: >-
-          user.info: kubeadmin password {{ hostvars[bastion_hostname]['kubeadmin_password']['content'] | b64decode }}
+    - name: print out user info for azure or gcp
+      agnosticd_user_info:
+        msg: kubeadmin password {{ hostvars[bastion_hostname]['kubeadmin_password']['content'] | b64decode }}
       when: cloud_provider == "azure" or cloud_provider == "gcp"
 
 - name: Step 005.7 Tell CloudForms we are done
